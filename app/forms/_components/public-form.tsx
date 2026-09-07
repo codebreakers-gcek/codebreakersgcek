@@ -25,11 +25,27 @@ import {
   Check,
   Copy,
   Ban,
+  QrCode,
+  Smartphone,
+  Info,
+  CheckCircle2,
+  XCircle,
+  Terminal,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { format } from "date-fns";
 import { submitFormResponse } from "../actions";
 import type { PublishedFormResponse } from "../actions";
 import { FormFieldDefinition, BANNER_TEMPLATES } from "@/lib/form-types";
+import {
+  buildUpiUri,
+  generateUpiQrDataUrl,
+  parseUpiUri,
+  validateUpiUri,
+  getUpiAppLinks,
+  UpiPaymentConfig,
+} from "@/lib/upi";
 import { generateHTML } from "@tiptap/html";
 import StarterKit from "@tiptap/starter-kit";
 import ListItem from "@tiptap/extension-list-item";
@@ -894,7 +910,7 @@ export default function PublicForm({ form }: PublicFormProps) {
   const [currentSectionIdx, setCurrentSectionIdx] = useState(0);
   const [sectionHistory, setSectionHistory] = useState<number[]>([]);
 
-  // ─── Draft Restore & Submission Check ───
+  // ─── Submission Status Check ───
   useEffect(() => {
     // Reset transient states to prevent cross-form state leaks
     setDuplicateInfo(null);
@@ -911,6 +927,9 @@ export default function PublicForm({ form }: PublicFormProps) {
 
     try {
       const formKey = form.formId || form.id;
+      // Clean up any legacy drafts
+      localStorage.removeItem(`public_form_draft_${formKey}`);
+
       const submittedKey = `public_form_submitted_${formKey}`;
       const isAlreadySubmitted = localStorage.getItem(submittedKey);
 
@@ -931,21 +950,8 @@ export default function PublicForm({ form }: PublicFormProps) {
             : "",
         });
         setSuccess(true);
-        localStorage.removeItem(`public_form_draft_${formKey}`);
         setIsMounted(true);
         return;
-      }
-
-      // Otherwise restore draft responses if available
-      const draftKey = `public_form_draft_${formKey}`;
-      const savedDraft = localStorage.getItem(draftKey);
-      if (savedDraft) {
-        const parsed = JSON.parse(savedDraft);
-        if (parsed.name) setName(parsed.name);
-        if (parsed.email) setEmail(parsed.email);
-        if (parsed.transactionId) setTransactionId(parsed.transactionId);
-        if (parsed.answers && typeof parsed.answers === "object")
-          setAnswers(parsed.answers);
       }
     } catch {
       // ignore storage error
@@ -953,28 +959,6 @@ export default function PublicForm({ form }: PublicFormProps) {
       setIsMounted(true);
     }
   }, [form.formId, form.id, form.definition.settings.allowMultipleSubmissions]);
-
-  // ─── Auto-Save Draft ───
-  useEffect(() => {
-    if (success) return;
-    const hasAnyContent = Boolean(
-      name.trim() ||
-        email.trim() ||
-        transactionId.trim() ||
-        Object.keys(answers).length > 0,
-    );
-    if (!hasAnyContent) return;
-
-    try {
-      const draftKey = `public_form_draft_${form.formId}`;
-      localStorage.setItem(
-        draftKey,
-        JSON.stringify({ name, email, transactionId, answers }),
-      );
-    } catch {
-      // ignore storage error
-    }
-  }, [form.formId, name, email, transactionId, answers, success]);
 
   const allFields = useMemo(
     () => form.definition.sections.flatMap((s) => s.fields),
@@ -986,6 +970,71 @@ export default function PublicForm({ form }: PublicFormProps) {
   );
 
   const firstName = name.split(" ")[0] || "there";
+
+  const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [isQrLoading, setIsQrLoading] = useState<boolean>(false);
+  const [showDevDiagnostics, setShowDevDiagnostics] = useState<boolean>(false);
+
+  const upiConfig: UpiPaymentConfig | null = useMemo(() => {
+    if (!paymentField?.upiId) return null;
+    return {
+      vpa: paymentField.upiId,
+      payeeName: paymentField.payeeName || form.title || "Payment",
+      amount: paymentField.paymentAmount,
+      currency: "INR",
+      transactionNote: paymentField.transactionNote || `${form.title} Payment`,
+      merchant: paymentField.merchantEnabled
+        ? {
+            enabled: true,
+            mcc: paymentField.merchantMcc,
+            merchantId: paymentField.merchantId,
+            terminalId: paymentField.merchantTerminalId,
+          }
+        : undefined,
+    };
+  }, [paymentField, form.title]);
+
+  const upiLinks = useMemo(() => {
+    if (!upiConfig) return null;
+    return getUpiAppLinks(upiConfig);
+  }, [upiConfig]);
+
+  const upiDiagnostics = useMemo(() => {
+    if (!upiConfig || !upiLinks) return null;
+    const parsed = parseUpiUri(upiLinks.universalUri);
+    const validation = validateUpiUri(upiLinks.universalUri, upiConfig);
+    return {
+      uri: upiLinks.universalUri,
+      parsed,
+      validation,
+    };
+  }, [upiConfig, upiLinks]);
+
+  // Generate QR Code data URL client-side
+  useEffect(() => {
+    let isMounted = true;
+    if (upiConfig) {
+      setIsQrLoading(true);
+      generateUpiQrDataUrl(upiConfig, { width: 300, margin: 1 })
+        .then((dataUrl) => {
+          if (isMounted) {
+            setQrDataUrl(dataUrl);
+            setIsQrLoading(false);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to generate UPI QR code:", err);
+          if (isMounted) {
+            setIsQrLoading(false);
+          }
+        });
+    } else {
+      setQrDataUrl("");
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [upiConfig]);
 
   /* ─── Answer Helpers ─── */
   const updateAnswer = (
@@ -1005,39 +1054,40 @@ export default function PublicForm({ form }: PublicFormProps) {
   };
 
   const copyToClipboard = (text: string, label: string = "UPI ID") => {
-    if (navigator.clipboard) {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
       navigator.clipboard.writeText(text);
       toast.success(`${label} copied to clipboard!`);
+    } else {
+      toast.info(`${label}: ${text}`);
+    }
+  };
+
+  const openUpiApp = (schemeUrl: string, appName: string = "UPI") => {
+    if (!paymentField?.upiId) return;
+    copyToClipboard(paymentField.upiId, "UPI ID");
+    const isMobile =
+      typeof navigator !== "undefined" &&
+      /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+    if (isMobile) {
+      toast.success(`Opening ${appName}...`);
+      window.location.href = schemeUrl;
+    } else {
+      toast.info(
+        `UPI ID (${paymentField.upiId}) copied! Scan the QR code or use your UPI app to pay ₹${paymentField.paymentAmount ?? 0}.`,
+        { duration: 5000 },
+      );
+      try {
+        window.location.href = schemeUrl;
+      } catch {
+        // Suppress desktop scheme errors
+      }
     }
   };
 
   const openUpi = () => {
-    if (!paymentField?.upiId) return;
-    const payee = paymentField.payeeName || form.title;
-    const amountParam =
-      paymentField.paymentAmount !== undefined
-        ? `&am=${paymentField.paymentAmount}`
-        : "";
-    const upiUrl = `upi://pay?pa=${encodeURIComponent(
-      paymentField.upiId,
-    )}&pn=${encodeURIComponent(payee)}${amountParam}&cu=INR`;
-    copyToClipboard(paymentField.upiId, "UPI ID");
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(
-      typeof navigator !== "undefined" ? navigator.userAgent : "",
-    );
-    if (isMobile) {
-      toast.success("Opening UPI payment app...");
-      window.location.href = upiUrl;
-    } else {
-      toast.info(
-        `UPI ID (${paymentField.upiId}) copied! Scan the QR code with GPay/PhonePe or open your app to pay ₹${paymentField.paymentAmount ?? 0}.`,
-        { duration: 5000 },
-      );
-      try {
-        window.location.href = upiUrl;
-      } catch {
-        // Suppress browser scheme error on desktop
-      }
+    if (upiLinks) {
+      openUpiApp(upiLinks.universalUri, "UPI app");
     }
   };
 
@@ -1789,82 +1839,135 @@ export default function PublicForm({ form }: PublicFormProps) {
           {field.description &&
             renderRichText(field.description, "mf-question-desc")}
 
-          <div className="mf-payment-card">
+          <div className="mf-payment-card" style={{ background: "#FAFAFA", borderRadius: 12, border: "1.5px solid #E2E8F0", padding: 24, marginBottom: 20 }}>
+            {/* Amount and Payee Header */}
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 16,
+                marginBottom: 20,
+                borderBottom: "1px solid #E2E8F0",
+                paddingBottom: 16,
               }}
             >
-              <span
-                style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: "#888",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
-                }}
-              >
-                Amount Due
-              </span>
-              <span className="mf-payment-amount">
+              <div>
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: "#64748B",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    display: "block",
+                    marginBottom: 2,
+                  }}
+                >
+                  Amount Due
+                </span>
+                <span style={{ fontSize: 13, color: "#475569" }}>
+                  Payee: <strong style={{ color: "#0F172A" }}>{field.payeeName || form.title}</strong>
+                </span>
+              </div>
+              <span className="mf-payment-amount" style={{ fontSize: 30, fontWeight: 800, color: "#0F172A" }}>
                 ₹{field.paymentAmount ?? 0}
               </span>
             </div>
+
             {field.upiId && (
               <div
                 style={{
                   display: "flex",
                   flexDirection: "column",
                   alignItems: "center",
-                  gap: 16,
+                  gap: 18,
                 }}
               >
+                {/* QR Code Container */}
                 <div
                   style={{
-                    width: 180,
-                    height: 180,
-                    background: "#fff",
-                    borderRadius: 8,
-                    border: "1px solid #e8e8e8",
-                    padding: 8,
+                    background: "#FFFFFF",
+                    borderRadius: 12,
+                    border: "1px solid #CBD5E1",
+                    padding: 16,
                     display: "flex",
+                    flexDirection: "column",
                     alignItems: "center",
-                    justifyContent: "center",
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.05)",
+                    maxWidth: 260,
+                    width: "100%",
                   }}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(
-                      `upi://pay?pa=${field.upiId}&pn=${encodeURIComponent(
-                        field.payeeName || form.title,
-                      )}${field.paymentAmount !== undefined ? `&am=${field.paymentAmount}` : ""}&cu=INR`,
-                    )}`}
-                    alt="UPI QR Code"
+                  <div
                     style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "contain",
+                      width: 200,
+                      height: 200,
+                      position: "relative",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "#FFFFFF",
                     }}
-                  />
+                  >
+                    {isQrLoading || !qrDataUrl ? (
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                        <Loader2 className="h-8 w-8 animate-spin" style={{ color: "#0078D4" }} />
+                        <span style={{ fontSize: 12, color: "#64748B" }}>Generating QR...</span>
+                      </div>
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={qrDataUrl}
+                        alt="Standard UPI Payment QR Code"
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          imageRendering: "pixelated",
+                        }}
+                      />
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 10,
+                      textAlign: "center",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: "#64748B",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    <QrCode className="h-3.5 w-3.5" />
+                    <span>Scan with any UPI app</span>
+                  </div>
                 </div>
+
+                {/* UPI ID Pill & Copy Button */}
                 <div
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
+                    background: "#FFFFFF",
+                    border: "1px solid #CBD5E1",
+                    borderRadius: 8,
+                    padding: "6px 12px",
+                    maxWidth: "100%",
                     flexWrap: "wrap",
                     justifyContent: "center",
                   }}
                 >
-                  <span style={{ fontSize: 13, color: "#888" }}>UPI:</span>
+                  <span style={{ fontSize: 12, color: "#64748B", fontWeight: 600 }}>UPI ID:</span>
                   <span
                     style={{
-                      fontSize: 14,
+                      fontSize: 13,
                       fontWeight: 700,
                       fontFamily: "monospace",
+                      color: "#0F172A",
+                      letterSpacing: "0.02em",
                     }}
                   >
                     {field.upiId}
@@ -1877,32 +1980,94 @@ export default function PublicForm({ form }: PublicFormProps) {
                       border: "none",
                       cursor: "pointer",
                       padding: 4,
-                      color: "#888",
+                      color: "#0078D4",
+                      display: "inline-flex",
+                      alignItems: "center",
                     }}
                     title="Copy UPI ID"
                   >
                     <Copy className="h-4 w-4" />
                   </button>
+                </div>
+
+                {/* Mobile App Intent Pay Buttons */}
+                <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", gap: 8 }}>
                   <button
                     type="button"
                     onClick={openUpi}
                     style={{
                       background: "#0078D4",
-                      color: "#fff",
+                      color: "#FFFFFF",
                       border: "none",
-                      borderRadius: 4,
-                      padding: "6px 16px",
-                      fontSize: 13,
+                      borderRadius: 8,
+                      padding: "10px 16px",
+                      fontSize: 14,
                       fontWeight: 600,
                       cursor: "pointer",
-                      display: "inline-flex",
+                      display: "flex",
                       alignItems: "center",
-                      gap: 6,
+                      justifyContent: "center",
+                      gap: 8,
+                      boxShadow: "0 2px 4px rgba(0,120,212,0.2)",
+                      transition: "background .15s ease",
                     }}
                   >
-                    <CreditCard className="h-4 w-4" /> Pay Now
+                    <Smartphone className="h-4 w-4" /> Pay with UPI App
                   </button>
+
+                  {upiLinks && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginTop: 2 }}>
+                      {upiLinks.apps
+                        .filter((app) => app.id !== "generic")
+                        .map((app) => (
+                          <button
+                            key={app.id}
+                            type="button"
+                            onClick={() => openUpiApp(app.schemeUrl, app.name)}
+                            style={{
+                              background: "#FFFFFF",
+                              border: "1px solid #E2E8F0",
+                              borderRadius: 6,
+                              padding: "6px 4px",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "#334155",
+                              cursor: "pointer",
+                              textAlign: "center",
+                              transition: "all .15s ease",
+                            }}
+                            title={`Open ${app.name}`}
+                          >
+                            {app.name}
+                          </button>
+                        ))}
+                    </div>
+                  )}
                 </div>
+
+                {/* Payment Verification Advisory Notice */}
+                <div
+                  style={{
+                    width: "100%",
+                    background: "#EFF6FF",
+                    border: "1px solid #BFDBFE",
+                    borderRadius: 8,
+                    padding: "10px 14px",
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    fontSize: 12,
+                    color: "#1E40AF",
+                    lineHeight: "1.4",
+                  }}
+                >
+                  <Info className="h-4 w-4 shrink-0" style={{ marginTop: 2, color: "#2563EB" }} />
+                  <div>
+                    <strong>Verification Notice:</strong> Scanning or opening the app transfers funds directly through your bank.
+                    After completing payment, please enter the <strong>UTR / Bank Transaction Reference ID</strong> below to confirm your submission.
+                  </div>
+                </div>
+
               </div>
             )}
           </div>
