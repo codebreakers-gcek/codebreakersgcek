@@ -37,6 +37,12 @@ export interface FormFieldDefinition {
   paymentAmount?: number;
   payeeName?: string;
   transactionIdLabel?: string;
+  /** Optional merchant configuration for UPI */
+  merchantEnabled?: boolean;
+  merchantMcc?: string;
+  merchantId?: string;
+  merchantTerminalId?: string;
+  transactionNote?: string;
   /** Optional image attached to this question */
   imageKey?: string;
   /** Linear scale settings */

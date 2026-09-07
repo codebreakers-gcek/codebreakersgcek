@@ -107,6 +107,7 @@ import {
 } from "@/lib/form-types";
 import { Uploader } from "@/components/file-uploader/Uploader";
 import { MiniRichEditor } from "@/components/admin_components/rich-text-editor/MiniRichEditor";
+import { generateUpiQrDataUrl, UpiPaymentConfig } from "@/lib/upi";
 
 /* ─── Helpers ─── */
 
@@ -269,6 +270,103 @@ const FIELD_TYPE_OPTIONS: Array<{ value: FormFieldType; label: string; icon: Rea
   { value: "payment", label: "Payment Block", icon: <CreditCard className="h-4 w-4" /> },
   { value: "button", label: "Button Link", icon: <ExternalLink className="h-4 w-4" /> },
 ];
+
+/* ─── Payment Field Preview Component ─── */
+function PaymentFieldPreview({ field }: { field: FormFieldDefinition }) {
+  const [qrUrl, setQrUrl] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!field.upiId?.trim()) {
+      setQrUrl("");
+      return;
+    }
+    setLoading(true);
+    const config: UpiPaymentConfig = {
+      vpa: field.upiId.trim(),
+      payeeName: field.payeeName?.trim() || field.label?.trim() || "Payment",
+      amount: field.paymentAmount,
+      currency: "INR",
+      transactionNote: field.transactionNote?.trim(),
+      merchant: field.merchantEnabled
+        ? {
+            enabled: true,
+            mcc: field.merchantMcc?.trim(),
+            merchantId: field.merchantId?.trim(),
+            terminalId: field.merchantTerminalId?.trim(),
+          }
+        : undefined,
+    };
+
+    generateUpiQrDataUrl(config, { width: 200, margin: 1 })
+      .then((url) => {
+        if (isMounted) {
+          setQrUrl(url);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        console.error("Preview QR generation error:", err);
+        if (isMounted) setLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [
+    field.upiId,
+    field.payeeName,
+    field.label,
+    field.paymentAmount,
+    field.transactionNote,
+    field.merchantEnabled,
+    field.merchantMcc,
+    field.merchantId,
+    field.merchantTerminalId,
+  ]);
+
+  if (!field.upiId?.trim()) {
+    return (
+      <p className="text-[11px] text-muted-foreground italic">
+        Enter a UPI ID and Amount to automatically generate a standard NPCI UPI QR code and Pay Now redirection.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3 p-3 rounded-lg bg-background border border-border flex items-center gap-4">
+      <div className="relative w-20 h-20 bg-white rounded-md border border-border p-1 shrink-0 flex items-center justify-center">
+        {loading || !qrUrl ? (
+          <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={qrUrl}
+            alt="Live UPI QR"
+            className="w-full h-full object-contain"
+          />
+        )}
+      </div>
+      <div className="text-xs space-y-1">
+        <span className="inline-block px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 font-semibold text-[10px]">
+          Standard NPCI Dynamic QR
+        </span>
+        <p className="font-semibold text-foreground">
+          Amount: {field.paymentAmount !== undefined ? `₹${field.paymentAmount}` : "Variable"}
+        </p>
+        <p className="text-muted-foreground truncate max-w-[200px]">
+          UPI: {field.upiId}
+        </p>
+        {field.merchantEnabled && field.merchantMcc && (
+          <p className="text-[10px] text-blue-600 font-mono">
+            MCC: {field.merchantMcc} (Merchant)
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* ─── Banner Selection Right Sidebar Sheet ─── */
 
@@ -881,12 +979,12 @@ function QuestionCard({
                 <div className="space-y-4 rounded-xl bg-muted/30 p-4 border border-border/50">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground font-medium">UPI ID *</Label>
+                      <Label className="text-xs text-muted-foreground font-medium">UPI ID / VPA *</Label>
                       <Input
                         value={field.upiId || ""}
                         onChange={(e) => onUpdate({ upiId: e.target.value })}
-                        placeholder="e.g. user@upi or gcek@upi"
-                        className="bg-background rounded-lg"
+                        placeholder="e.g. user@upi or merchant@sbi"
+                        className="bg-background rounded-lg font-mono text-xs"
                       />
                     </div>
                     <div className="space-y-1.5">
@@ -894,55 +992,88 @@ function QuestionCard({
                       <Input
                         type="number"
                         min="0"
+                        step="0.01"
                         value={field.paymentAmount ?? ""}
                         onChange={(e) => onUpdate({ paymentAmount: e.target.value ? Number(e.target.value) : undefined })}
-                        placeholder="e.g. 299"
+                        placeholder="e.g. 299.00"
                         className="bg-background rounded-lg"
                       />
                     </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground font-medium">Payee Name (Optional)</Label>
-                    <Input
-                      value={field.payeeName || ""}
-                      onChange={(e) => onUpdate({ payeeName: e.target.value })}
-                      placeholder="e.g. Codebreakers GCEK"
-                      className="bg-background rounded-lg"
-                    />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground font-medium">Payee Name (Optional)</Label>
+                      <Input
+                        value={field.payeeName || ""}
+                        onChange={(e) => onUpdate({ payeeName: e.target.value })}
+                        placeholder="e.g. Codebreakers GCEK"
+                        className="bg-background rounded-lg"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground font-medium">Transaction ID Field Label</Label>
+                      <Input
+                        value={field.transactionIdLabel || ""}
+                        onChange={(e) => onUpdate({ transactionIdLabel: e.target.value })}
+                        placeholder="e.g. UTR / Transaction Reference ID"
+                        className="bg-background rounded-lg"
+                      />
+                    </div>
                   </div>
 
-                  {field.upiId ? (
-                    <div className="mt-3 p-3 rounded-lg bg-background border border-border flex items-center gap-4">
-                      <div className="relative w-20 h-20 bg-white rounded-md border border-border p-1 shrink-0">
-                        {/* eslint-disable-next-html-img-element */}
-                        <Image
-                          src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(
-                            `upi://pay?pa=${field.upiId}&pn=${encodeURIComponent(field.payeeName || field.label || "Payment")}&am=${field.paymentAmount ?? ""}&cu=INR`
-                          )}`}
-                          alt="Live UPI QR"
-                          width={80}
-                          height={80}
-                          className="w-full h-full object-contain"
-                          unoptimized
-                        />
-                      </div>
-                      <div className="text-xs space-y-1">
-                        <span className="inline-block px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 font-semibold text-[10px]">
-                          Auto-Generated Dynamic QR
-                        </span>
-                        <p className="font-semibold text-foreground">
-                          Amount: ₹{field.paymentAmount ?? 0}
-                        </p>
-                        <p className="text-muted-foreground truncate max-w-[200px]">
-                          UPI: {field.upiId}
+                  {/* Merchant Account Configuration Toggle */}
+                  <div className="pt-2 border-t border-border/40">
+                    <div className="flex items-center justify-between py-1">
+                      <div className="space-y-0.5">
+                        <Label className="text-xs font-semibold text-foreground">Registered Merchant Configuration</Label>
+                        <p className="text-[11px] text-muted-foreground">
+                          Enable only if this is an official business merchant UPI account with an acquiring bank MCC.
                         </p>
                       </div>
+                      <Switch
+                        checked={Boolean(field.merchantEnabled)}
+                        onCheckedChange={(c) => onUpdate({ merchantEnabled: c })}
+                      />
                     </div>
-                  ) : (
-                    <p className="text-[11px] text-muted-foreground italic">
-                      Enter a UPI ID and Amount to automatically generate a dynamic UPI QR Code for instant scanning & Pay Now redirection.
-                    </p>
-                  )}
+
+                    {field.merchantEnabled && (
+                      <div className="mt-3 p-3 bg-background rounded-lg border border-border/60 space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className="space-y-1">
+                            <Label className="text-[11px] font-medium text-foreground">Merchant Category Code (MCC)</Label>
+                            <Input
+                              value={field.merchantMcc || ""}
+                              onChange={(e) => onUpdate({ merchantMcc: e.target.value.trim() })}
+                              placeholder="e.g. 5411, 8220"
+                              maxLength={4}
+                              className="text-xs bg-muted/20"
+                            />
+                            <span className="text-[10px] text-muted-foreground">Official 4-digit MCC</span>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[11px] font-medium text-foreground">Merchant ID (Optional)</Label>
+                            <Input
+                              value={field.merchantId || ""}
+                              onChange={(e) => onUpdate({ merchantId: e.target.value.trim() })}
+                              placeholder="e.g. MID12345"
+                              className="text-xs bg-muted/20"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[11px] font-medium text-foreground">Terminal ID (Optional)</Label>
+                            <Input
+                              value={field.merchantTerminalId || ""}
+                              onChange={(e) => onUpdate({ merchantTerminalId: e.target.value.trim() })}
+                              placeholder="e.g. TID12345"
+                              className="text-xs bg-muted/20"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <PaymentFieldPreview field={field} />
                 </div>
               ) : field.type === "linear_scale" ? (
                 <div className="space-y-4 rounded-xl bg-muted/30 p-4 border border-border/50">
