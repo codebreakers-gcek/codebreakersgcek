@@ -127,11 +127,24 @@ function getResponseEmail(answers: Record<string, unknown> | null | undefined): 
   return "N/A";
 }
 
+function humanizeKey(key: string): string {
+  if (!key) return "Question";
+  return key
+    .replace(/^field[-_]/i, "Question ")
+    .replace(/^sub[-_]/i, "Sub ")
+    .replace(/([A-Z])/g, " $1")
+    .replace(/[-_]/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function extractAnswerValue(
   answers: Record<string, unknown> | null | undefined,
   fieldId: string,
   subId?: string,
-  subLabel?: string
+  subLabel?: string,
+  subQuestions?: Array<{ id: string; label: string; type?: string }>,
+  entryLabel?: string
 ): string {
   if (!answers) return "—";
 
@@ -155,16 +168,43 @@ function extractAnswerValue(
 
   if (Array.isArray(raw)) {
     if (raw.length === 0) return "—";
-    if (typeof raw[0] === "object" && raw[0] !== null && "storedFileName" in raw[0]) {
-      return raw.map((f: any) => f.storedFileName || f.originalFileName).join(", ");
+    if (typeof raw[0] === "object" && raw[0] !== null && ("storedFileName" in raw[0] || "originalFileName" in raw[0] || "webViewLink" in raw[0] || "name" in raw[0])) {
+      return raw
+        .map((f: any) => f.originalFileName || f.storedFileName || f.name || f.webViewLink || "File")
+        .filter(Boolean)
+        .join(", ");
     }
-    return raw.join(", ");
+    if (typeof raw[0] === "object" && raw[0] !== null) {
+      return raw
+        .map((member: Record<string, any>, idx: number) => {
+          const prefix = `${entryLabel || "Member"} #${idx + 1}${idx === 0 ? " (Leader)" : ""}`;
+          if (subQuestions && subQuestions.length > 0) {
+            const parts = subQuestions
+              .map((s) => `${s.label}: ${member[s.id] || "—"}`)
+              .join(" | ");
+            return `${prefix}: ${parts}`;
+          }
+          const pairs = Object.entries(member)
+            .map(([k, v]) => `${humanizeKey(k)}: ${v || "—"}`)
+            .join(" | ");
+          return `${prefix}: ${pairs}`;
+        })
+        .join("\n");
+    }
+    return raw.map((item) => (typeof item === "object" && item !== null ? JSON.stringify(item) : String(item))).join(", ");
   }
-  if (typeof raw === "object") {
+
+  if (typeof raw === "object" && raw !== null) {
+    const rawObj = raw as Record<string, unknown>;
+    if ("storedFileName" in rawObj || "originalFileName" in rawObj || "webViewLink" in rawObj || "name" in rawObj) {
+      const f = rawObj as any;
+      return f.originalFileName || f.storedFileName || f.name || f.webViewLink || "File";
+    }
     const pairs: string[] = [];
-    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(rawObj)) {
       if (v !== undefined && v !== null && String(v).trim()) {
-        pairs.push(`${k}: ${String(v).trim()}`);
+        const keyLabel = subQuestions?.find((s) => s.id === k)?.label || humanizeKey(k);
+        pairs.push(`${keyLabel}: ${String(v).trim()}`);
       }
     }
     return pairs.length > 0 ? pairs.join(" • ") : "—";
@@ -257,9 +297,57 @@ function exportResponses(
                   .join(", ") || "—"
               );
             }
+            if (typeof raw === "object" && raw !== null) {
+              const item = raw as any;
+              return item.webViewLink || item.downloadLink || item.storedFileName || item.originalFileName || "—";
+            }
             return "—";
           },
         });
+      } else if (f.type === "team_members") {
+        const subs = f.subQuestions || [];
+        if (subs.length > 0) {
+          let maxCount = Math.max(1, f.minEntries || 1);
+          responsesToExport.forEach((r) => {
+            const rawMembers = (r.answers as Record<string, unknown>)?.[f.id];
+            if (Array.isArray(rawMembers)) {
+              maxCount = Math.max(maxCount, rawMembers.length);
+            }
+          });
+          if (f.maxEntries) {
+            maxCount = Math.min(maxCount, f.maxEntries);
+          }
+
+          for (let mIdx = 0; mIdx < maxCount; mIdx++) {
+            const memberPrefix = `${f.entryLabel || "Member"} ${mIdx + 1}${mIdx === 0 ? " (Leader)" : ""}`;
+            subs.forEach((sub) => {
+              const headerLabel = `${f.label ? `${f.label} - ` : ""}${memberPrefix} - ${sub.label}`;
+              columns.push({
+                header: headerLabel,
+                getValue: (r) => {
+                  const rawMembers = (r.answers as Record<string, unknown>)?.[f.id];
+                  if (!Array.isArray(rawMembers) || !rawMembers[mIdx]) return "—";
+                  const member = rawMembers[mIdx];
+                  const val = typeof member === "object" && member !== null ? member[sub.id] : undefined;
+                  return val !== undefined && val !== null && String(val).trim() ? String(val).trim() : "—";
+                },
+              });
+            });
+          }
+        } else {
+          columns.push({
+            header: f.label || "Team Members",
+            getValue: (r) =>
+              extractAnswerValue(
+                r.answers as Record<string, unknown>,
+                f.id,
+                undefined,
+                undefined,
+                f.subQuestions,
+                f.entryLabel
+              ),
+          });
+        }
       } else if (f.type === "multi_input" && f.subQuestions && f.subQuestions.length > 0) {
         f.subQuestions.forEach((sub) => {
           const headerLabel = f.label ? `${f.label} - ${sub.label}` : sub.label;
@@ -375,6 +463,9 @@ export default function ResponsesClient({ form }: ResponsesClientProps) {
       subLabel?: string;
       label: string;
       sectionTitle: string;
+      type?: string;
+      subQuestions?: Array<{ id: string; label: string; type?: string }>;
+      entryLabel?: string;
     }> = [];
 
     if (form.definition?.settings?.collectName) {
@@ -389,7 +480,16 @@ export default function ResponsesClient({ form }: ResponsesClientProps) {
       const sortedFields = (sec.fields || []).slice().sort((a, b) => a.order - b.order);
       sortedFields.forEach((f) => {
         if (f.type === "button" || f.type === "payment") return;
-        if (f.type === "multi_input" && f.subQuestions && f.subQuestions.length > 0) {
+        if (f.type === "team_members") {
+          list.push({
+            fieldId: f.id,
+            label: f.label || "Team Members",
+            sectionTitle: sec.title,
+            type: "team_members",
+            subQuestions: (f.subQuestions || []).map((sub) => ({ id: sub.id, label: sub.label, type: sub.type })),
+            entryLabel: f.entryLabel || "Member",
+          });
+        } else if (f.type === "multi_input" && f.subQuestions && f.subQuestions.length > 0) {
           f.subQuestions.forEach((sub) => {
             list.push({
               fieldId: f.id,
@@ -1158,6 +1258,51 @@ export default function ResponsesClient({ form }: ResponsesClientProps) {
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Submitted Answers (In Question Order)</p>
                   <div className="rounded-md border divide-y bg-background">
                     {fieldMap.map((item) => {
+                      // Team Members: render as expandable member cards
+                      if (item.type === "team_members") {
+                        const rawMembers = (viewingResponse.answers as Record<string, unknown>)?.[item.fieldId];
+                        const members: Array<Record<string, string>> = Array.isArray(rawMembers)
+                          ? rawMembers.filter((m): m is Record<string, string> => typeof m === "object" && m !== null)
+                          : [];
+                        const subs = item.subQuestions || [];
+                        return (
+                          <div key={item.fieldId} className="px-3.5 py-3 space-y-2.5">
+                            <p className="text-xs font-semibold text-muted-foreground">{item.label} ({members.length})</p>
+                            {members.length === 0 ? (
+                              <p className="text-sm text-muted-foreground italic">No members submitted</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {members.map((member, mIdx) => (
+                                  <div key={mIdx} className="rounded-lg border bg-muted/30 p-3 space-y-1.5">
+                                    <p className="text-[11px] font-bold text-foreground uppercase tracking-wider">
+                                      {item.entryLabel || "Member"} #{mIdx + 1}{mIdx === 0 ? " (Leader)" : ""}
+                                    </p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                      {subs.length > 0 ? subs.map((sub) => {
+                                        const val = member[sub.id] || "—";
+                                        return (
+                                          <div key={sub.id} className="rounded-md bg-background border px-2.5 py-1.5">
+                                            <p className="text-[10px] text-muted-foreground font-medium">{sub.label}</p>
+                                            <p className="text-xs font-semibold text-foreground">{val}</p>
+                                          </div>
+                                        );
+                                      }) : Object.entries(member).map(([k, v]) => (
+                                        <div key={k} className="rounded-md bg-background border px-2.5 py-1.5">
+                                          <p className="text-[10px] text-muted-foreground font-medium">
+                                            {k.replace(/^sub[-_]/i, "").replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                                          </p>
+                                          <p className="text-xs font-semibold text-foreground">{String(v || "—")}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
                       const ansVal = extractAnswerValue(
                         viewingResponse.answers as Record<string, unknown>,
                         item.fieldId,

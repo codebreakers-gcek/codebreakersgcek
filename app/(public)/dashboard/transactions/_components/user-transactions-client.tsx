@@ -55,27 +55,41 @@ interface UserTransactionsClientProps {
 /**
  * Parses and extracts a human-readable dictionary of field labels and sub-question labels from form definition.
  */
+/**
+ * Parses and extracts a human-readable dictionary of field labels and sub-question labels from form definition.
+ */
 function extractFormQuestionMaps(formDefinition: any) {
   const fieldLabelMap = new Map<string, string>();
+  const fieldMetaMap = new Map<
+    string,
+    {
+      id: string;
+      label: string;
+      type?: string;
+      entryLabel?: string;
+      subQuestions?: Array<{ id: string; label: string; type?: string }>;
+    }
+  >();
   const subQuestionMap = new Map<string, { parentLabel: string; subLabel: string }>();
 
-  if (!formDefinition) return { fieldLabelMap, subQuestionMap };
+  if (!formDefinition) return { fieldLabelMap, fieldMetaMap, subQuestionMap };
 
   try {
     const def = typeof formDefinition === "string" ? JSON.parse(formDefinition) : formDefinition;
     if (def && Array.isArray(def.sections)) {
       for (const section of def.sections) {
-        const sectionTitle = section.title || "Form Section";
         if (Array.isArray(section.fields)) {
           for (const field of section.fields) {
+            if (!field || !field.id) continue;
             const fieldLabel = field.label || field.placeholder || "Question";
             fieldLabelMap.set(field.id, fieldLabel);
 
-            // If field has sub-questions (e.g. multi_input, grid, etc.)
+            const subs: Array<{ id: string; label: string; type?: string }> = [];
             if (Array.isArray(field.subQuestions)) {
               for (const sub of field.subQuestions) {
                 if (sub && sub.id) {
                   const subLabel = sub.label || sub.placeholder || "Sub-question";
+                  subs.push({ id: sub.id, label: subLabel, type: sub.type });
                   subQuestionMap.set(sub.id, {
                     parentLabel: fieldLabel,
                     subLabel: subLabel,
@@ -83,6 +97,14 @@ function extractFormQuestionMaps(formDefinition: any) {
                 }
               }
             }
+
+            fieldMetaMap.set(field.id, {
+              id: field.id,
+              label: fieldLabel,
+              type: field.type,
+              entryLabel: field.entryLabel,
+              subQuestions: subs,
+            });
           }
         }
       }
@@ -91,7 +113,7 @@ function extractFormQuestionMaps(formDefinition: any) {
     console.error("Error parsing form definition for question labels:", e);
   }
 
-  return { fieldLabelMap, subQuestionMap };
+  return { fieldLabelMap, fieldMetaMap, subQuestionMap };
 }
 
 /**
@@ -198,7 +220,7 @@ export function UserTransactionsClient({
    * Helper component to render clean answers and sub-questions without raw JSON
    */
   const renderFormattedAnswers = (tx: UserTransactionItem) => {
-    const { fieldLabelMap, subQuestionMap } = extractFormQuestionMaps(tx.formDefinition);
+    const { fieldLabelMap, fieldMetaMap, subQuestionMap } = extractFormQuestionMaps(tx.formDefinition);
     const entries = Object.entries(tx.answers || {});
 
     if (entries.length === 0) {
@@ -212,7 +234,141 @@ export function UserTransactionsClient({
     return (
       <div className="space-y-3">
         {entries.map(([key, value]) => {
-          // Check if value is an object or JSON string containing sub-questions
+          const fieldMeta = fieldMetaMap.get(key);
+          const parentLabel =
+            key === "name"
+              ? "Full Name"
+              : key === "email"
+              ? "Email Address"
+              : fieldLabelMap.get(key) || humanizeKey(key);
+
+          // CASE 1: Team Members (array of objects)
+          const isTeamMembers =
+            fieldMeta?.type === "team_members" ||
+            (Array.isArray(value) &&
+              value.length > 0 &&
+              typeof value[0] === "object" &&
+              value[0] !== null &&
+              !("storedFileName" in value[0]) &&
+              !("originalFileName" in value[0]) &&
+              !("webViewLink" in value[0]));
+
+          if (isTeamMembers) {
+            const members = (Array.isArray(value) ? value : []).filter(
+              (m): m is Record<string, any> => typeof m === "object" && m !== null
+            );
+            const subs = fieldMeta?.subQuestions || [];
+            return (
+              <div
+                key={key}
+                className="p-3.5 rounded-xl border border-border/70 bg-card/60 shadow-2xs space-y-2.5"
+              >
+                <div className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+                  <Layers className="w-3.5 h-3.5 text-primary" />
+                  <span>{parentLabel} ({members.length})</span>
+                </div>
+
+                <div className="space-y-2">
+                  {members.map((member, mIdx) => (
+                    <div key={mIdx} className="rounded-lg border bg-muted/30 p-3 space-y-1.5">
+                      <p className="text-[11px] font-bold text-foreground uppercase tracking-wider">
+                        {fieldMeta?.entryLabel || "Member"} #{mIdx + 1}{mIdx === 0 ? " (Leader)" : ""}
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {subs.length > 0
+                          ? subs.map((sub) => (
+                              <div key={sub.id} className="p-2 rounded-lg bg-background border text-xs">
+                                <span className="text-[10px] text-muted-foreground font-medium block">
+                                  {sub.label}
+                                </span>
+                                <span className="font-semibold text-foreground mt-0.5">
+                                  {String(member[sub.id] || "—")}
+                                </span>
+                              </div>
+                            ))
+                          : Object.entries(member).map(([subK, subV]) => {
+                              const subInfo = subQuestionMap.get(subK);
+                              const subLabel = subInfo ? subInfo.subLabel : humanizeKey(subK);
+                              return (
+                                <div key={subK} className="p-2 rounded-lg bg-background border text-xs">
+                                  <span className="text-[10px] text-muted-foreground font-medium block">
+                                    {subLabel}
+                                  </span>
+                                  <span className="font-semibold text-foreground mt-0.5">
+                                    {String(subV ?? "—")}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          }
+
+          // CASE 2: File Upload
+          const isFileUpload =
+            fieldMeta?.type === "file_upload" ||
+            (typeof value === "object" &&
+              value !== null &&
+              ("storedFileName" in value || "originalFileName" in value || "webViewLink" in value)) ||
+            (Array.isArray(value) &&
+              value.length > 0 &&
+              typeof value[0] === "object" &&
+              value[0] !== null &&
+              ("storedFileName" in value[0] || "originalFileName" in value[0] || "webViewLink" in value[0]));
+
+          if (isFileUpload) {
+            const fileItems: any[] = Array.isArray(value) ? value : value ? [value] : [];
+            return (
+              <div
+                key={key}
+                className="p-3 rounded-xl border border-border/60 bg-muted/20 hover:bg-muted/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs"
+              >
+                <span className="text-muted-foreground font-medium flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" />
+                  {parentLabel}
+                </span>
+                <div className="flex flex-wrap gap-1.5 justify-start sm:justify-end pl-3 sm:pl-0">
+                  {fileItems.length === 0 ? (
+                    <span className="text-muted-foreground italic">No file uploaded</span>
+                  ) : (
+                    fileItems.map((fObj, fIdx) => {
+                      const fileName =
+                        fObj?.originalFileName || fObj?.storedFileName || fObj?.name || `Attachment ${fIdx + 1}`;
+                      const link = fObj?.webViewLink || fObj?.downloadLink;
+                      if (link) {
+                        return (
+                          <a
+                            key={fIdx}
+                            href={link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-primary font-semibold hover:underline bg-primary/10 px-2 py-0.5 rounded text-xs"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span className="max-w-[180px] truncate">{fileName}</span>
+                          </a>
+                        );
+                      }
+                      return (
+                        <span
+                          key={fIdx}
+                          className="inline-flex items-center gap-1 font-semibold text-foreground bg-muted px-2 py-0.5 rounded text-xs"
+                        >
+                          <span className="max-w-[180px] truncate">{fileName}</span>
+                        </span>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          // CASE 3: Sub-Questions Object (e.g. { "sub-9d4kvxbu": "MALE", "sub-123": "CSE" })
           let parsedSubObj: Record<string, any> | null = null;
           if (value && typeof value === "object" && !Array.isArray(value)) {
             parsedSubObj = value as Record<string, any>;
@@ -225,10 +381,6 @@ export function UserTransactionsClient({
             } catch {}
           }
 
-          // Parent field label
-          const parentLabel = fieldLabelMap.get(key) || humanizeKey(key);
-
-          // CASE 1: Sub-Questions Object (e.g. { "sub-9d4kvxbu": "MALE", "sub-123": "CSE" })
           if (parsedSubObj) {
             const subEntries = Object.entries(parsedSubObj);
             return (
@@ -244,7 +396,10 @@ export function UserTransactionsClient({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pl-2 border-l-2 border-primary/20">
                   {subEntries.map(([subId, subVal]) => {
                     const subInfo = subQuestionMap.get(subId);
-                    const subLabel = subInfo ? subInfo.subLabel : humanizeKey(subId);
+                    const subLabel =
+                      fieldMeta?.subQuestions?.find((s) => s.id === subId)?.label ||
+                      subInfo?.subLabel ||
+                      humanizeKey(subId);
                     const valText = typeof subVal === "object" ? JSON.stringify(subVal) : String(subVal ?? "N/A");
 
                     return (
@@ -266,14 +421,24 @@ export function UserTransactionsClient({
             );
           }
 
-          // CASE 2: Single question / value
+          // CASE 4: Single question / value
           const subInfo = subQuestionMap.get(key);
           const displayLabel = subInfo ? `${subInfo.parentLabel} → ${subInfo.subLabel}` : parentLabel;
-          const displayValue = Array.isArray(value)
-            ? value.join(", ")
-            : typeof value === "boolean"
-            ? value ? "Yes" : "No"
-            : String(value ?? "N/A");
+          let displayValue = "N/A";
+          if (Array.isArray(value)) {
+            displayValue = value
+              .map((v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)))
+              .join(", ");
+          } else if (typeof value === "boolean") {
+            displayValue = value ? "Yes" : "No";
+          } else if (typeof value === "object" && value !== null) {
+            const pairs = Object.entries(value as Record<string, unknown>)
+              .map(([k, v]) => `${humanizeKey(k)}: ${String(v ?? "N/A")}`)
+              .join(" • ");
+            displayValue = pairs || "N/A";
+          } else if (value !== undefined && value !== null) {
+            displayValue = String(value).trim() || "N/A";
+          }
 
           return (
             <div

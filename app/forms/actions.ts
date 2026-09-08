@@ -75,6 +75,19 @@ function extractEmailFromAnswers(answers: Record<string, unknown>): string | nul
       if (val.includes("@") && val.includes(".") && (k.toLowerCase().includes("email") || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val))) {
         return val;
       }
+    } else if (Array.isArray(v)) {
+      for (const item of v) {
+        if (item && typeof item === "object") {
+          for (const [subK, subV] of Object.entries(item)) {
+            if (typeof subV === "string") {
+              const val = subV.trim().toLowerCase();
+              if (val.includes("@") && val.includes(".") && (subK.toLowerCase().includes("email") || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val))) {
+                return val;
+              }
+            }
+          }
+        }
+      }
     }
   }
   return null;
@@ -375,7 +388,10 @@ export async function submitFormResponse(input: {
         formId: form.id,
         answers: cleanedAnswers as unknown as import("@prisma/client").Prisma.InputJsonValue,
         transactionId: input.transactionId?.trim() || null,
-        paymentStatus: hasPaymentField(formDef) ? "pending" : "submitted",
+        paymentStatus: hasPaymentField(formDef)
+          ? (input.transactionId?.trim()?.startsWith("pay_") ? "verified" : "pending")
+          : "submitted",
+        verifiedAt: hasPaymentField(formDef) && input.transactionId?.trim()?.startsWith("pay_") ? new Date() : null,
         submittedById: session?.user?.id || null,
         files: {
           create: uploadedFilesToCreate.map((f) => ({
@@ -421,6 +437,23 @@ export async function submitFormResponse(input: {
         }
         if (!recipientName && keyLower.includes("name") && valStr) {
           recipientName = valStr;
+        }
+      } else if (Array.isArray(v)) {
+        for (const item of v) {
+          if (item && typeof item === "object") {
+            for (const [subK, subV] of Object.entries(item)) {
+              if (typeof subV === "string") {
+                const subStr = subV.trim();
+                const subKLower = subK.toLowerCase();
+                if (!recipientEmail && (subKLower.includes("email") || (subStr.includes("@") && subStr.includes(".")))) {
+                  recipientEmail = subStr;
+                }
+                if (!recipientName && (subKLower.includes("name") || subKLower.includes("leader")) && subStr) {
+                  recipientName = subStr;
+                }
+              }
+            }
+          }
         }
       }
     }
