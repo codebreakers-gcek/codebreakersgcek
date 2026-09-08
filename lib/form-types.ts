@@ -5,19 +5,25 @@ export type FormFieldType =
   | "checkbox"
   | "dropdown"
   | "date"
+  | "dob"
   | "email"
   | "number"
   | "payment"
   | "button"
   | "linear_scale"
   | "multi_input"
+  | "team_members"
   | "file_upload";
+
+export type SubQuestionType = "short_text" | "email" | "number" | "dropdown" | "dob" | "date";
 
 export interface SubQuestionDefinition {
   id: string;
   label: string;
+  type?: SubQuestionType;
   placeholder?: string;
   required?: boolean;
+  options?: string[];
 }
 
 export interface FormFieldDefinition {
@@ -37,6 +43,11 @@ export interface FormFieldDefinition {
   paymentAmount?: number;
   payeeName?: string;
   transactionIdLabel?: string;
+  /** Payment method toggles (UPI QR, Razorpay, Cash) */
+  enableUpi?: boolean;
+  enableRazorpay?: boolean;
+  enableCash?: boolean;
+  allowedPaymentMethods?: Array<"upi" | "razorpay" | "cash">;
   /** Optional merchant configuration for UPI */
   merchantEnabled?: boolean;
   merchantMcc?: string;
@@ -52,6 +63,11 @@ export interface FormFieldDefinition {
   scaleMaxLabel?: string;
   /** Multiple input box / sub-questions */
   subQuestions?: SubQuestionDefinition[];
+  /** Dynamic Repeater / Team Member settings */
+  minEntries?: number;
+  maxEntries?: number;
+  entryLabel?: string;
+  addButtonLabel?: string;
   /** File Upload settings */
   allowedFileTypes?: string[];
   maxFiles?: number;
@@ -91,9 +107,35 @@ export const BANNER_TEMPLATES = [
 
 export type BannerTemplateId = (typeof BANNER_TEMPLATES)[number]["id"];
 
+export type FormStyleId = "minimal" | "terminal";
+
+export interface FormStyleOption {
+  id: FormStyleId;
+  name: string;
+  description: string;
+  badge: string;
+}
+
+export const FORM_STYLES: FormStyleOption[] = [
+  {
+    id: "minimal",
+    name: "Minimal & Professional",
+    description: "Modern, clean corporate aesthetic with sleek typography and subtle cards.",
+    badge: "Clean / Pro",
+  },
+  {
+    id: "terminal",
+    name: "Terminal CLI",
+    description: "Cyber-industrial hacker shell with monospace typography, phosphor green glow, prompt markers, and CRT scanlines.",
+    badge: "Hacker CLI",
+  },
+];
+
 export interface FormDefinition {
   sections: FormSectionDefinition[];
   theme?: string;
+  /** Visual layout & aesthetic style */
+  formStyle?: FormStyleId;
   /** Uploaded custom banner image key */
   bannerKey?: string;
   /** Pre-defined gradient banner template id */
@@ -119,6 +161,7 @@ export function createBlankFormDefinition(): FormDefinition {
       },
     ],
     theme: "default",
+    formStyle: "minimal",
     bannerKey: "",
     bannerTemplate: "purple-blue",
     settings: {
@@ -130,3 +173,4 @@ export function createBlankFormDefinition(): FormDefinition {
     },
   };
 }
+
