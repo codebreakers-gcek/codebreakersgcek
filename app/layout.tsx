@@ -3,6 +3,7 @@ import { Source_Code_Pro } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import LenisProvider from "@/components/providers/lenis-provider";
+import ClarityProvider from "@/components/providers/clarity-provider";
 import { Analytics } from "@vercel/analytics/next";
 import { RealtimeAttendanceListener } from "@/components/realtime/realtime-attendance-listener";
 
@@ -198,6 +199,7 @@ export default function RootLayout({
         <RealtimeAttendanceListener />
         <Toaster position="top-right" richColors closeButton />
         <Analytics />
+        <ClarityProvider />
       </body>
     </html>
   );
