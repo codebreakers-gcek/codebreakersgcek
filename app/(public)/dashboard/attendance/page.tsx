@@ -83,6 +83,42 @@ export default function AttendancePage() {
     toast.success("Attendance QR Pass downloaded");
   };
 
+  const handleDownloadTransparentQR = async () => {
+    if (!user) return;
+    try {
+      const identifier = user.cbUserId || user.rollNumber || user.email;
+      const profileUrl = typeof window !== "undefined"
+        ? `${window.location.origin}/member/${encodeURIComponent(identifier)}`
+        : `https://app.codebreakersgcek.tech/member/${encodeURIComponent(identifier)}`;
+
+      const dataUrl = await QRCode.toDataURL(profileUrl, {
+        errorCorrectionLevel: "H",
+        width: 1024,
+        margin: 1,
+        color: {
+          dark: "#000000ff",
+          light: "#00000000",
+        },
+      });
+
+      const safeName = (user.cbUserId || user.name || "student")
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .replace(/_+/g, "_");
+
+      const link = document.createElement("a");
+      link.download = `${safeName}-transparent-qr.png`;
+      link.href = dataUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      toast.success("Removed BG QR downloaded");
+    } catch (err) {
+      console.error("Error downloading transparent QR:", err);
+      toast.error("Failed to download transparent QR");
+    }
+  };
+
   return (
     <div className="container mx-auto p-4 sm:p-6 space-y-6 max-w-8xl">
       {/* Top Header */}
@@ -135,16 +171,29 @@ export default function AttendancePage() {
                   </div>
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDownloadQR}
-                  className="w-full text-xs gap-2 rounded-xl h-9"
-                  disabled={isGenerating}
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Save QR Pass
-                </Button>
+                <div className="flex flex-col gap-2 w-full">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDownloadTransparentQR}
+                    className="w-full text-xs gap-2 rounded-xl h-9"
+                    disabled={isGenerating}
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                    Download Removed BG QR
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleDownloadQR}
+                    className="w-full text-xs gap-2 rounded-xl h-9 text-muted-foreground hover:text-foreground"
+                    disabled={isGenerating}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Save Full QR Pass (White BG)
+                  </Button>
+                </div>
               </>
             )}
           </CardContent>

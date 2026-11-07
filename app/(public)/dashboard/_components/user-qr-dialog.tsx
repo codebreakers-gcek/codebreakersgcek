@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Download, Loader2, QrCode, Copy, Check, ExternalLink } from "lucide-react";
+import { Download, Loader2, QrCode, Copy, Check, ExternalLink, Sparkles } from "lucide-react";
 import QRCode from "qrcode";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -48,6 +48,7 @@ export function UserQRDialog({
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isDownloadingTransparent, setIsDownloadingTransparent] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const formatMemberId = (rawId?: string | null) => {
@@ -146,6 +147,40 @@ export function UserQRDialog({
     toast.success("Attendance QR Code Downloaded! 📥");
   };
 
+  const handleDownloadTransparent = async () => {
+    try {
+      setIsDownloadingTransparent(true);
+      const dataUrl = await QRCode.toDataURL(profileUrl, {
+        errorCorrectionLevel: "H",
+        width: 1024,
+        margin: 1,
+        color: {
+          dark: "#000000ff",
+          light: "#00000000",
+        },
+      });
+
+      const cleanName = (user.cbUserId || user.name || "member")
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .replace(/_+/g, "_");
+
+      const link = document.createElement("a");
+      link.download = `${cleanName}_QR_Transparent.png`;
+      link.href = dataUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      toast.success("Removed BG QR Code Downloaded! ✨");
+    } catch (err) {
+      console.error("Error downloading transparent QR code:", err);
+      toast.error("Failed to generate transparent QR code");
+    } finally {
+      setIsDownloadingTransparent(false);
+    }
+  };
+
   const handleCopyLink = async () => {
     try {
       await navigator.clipboard.writeText(profileUrl);
@@ -198,7 +233,21 @@ export function UserQRDialog({
               className="w-full h-9 font-mono text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl cursor-pointer gap-2"
             >
               <Download className="w-4 h-4" />
-              <span>Download QR Pass</span>
+              <span>Download QR Pass (With Card)</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={handleDownloadTransparent}
+              disabled={isDownloadingTransparent}
+              className="w-full h-9 font-mono text-xs font-semibold rounded-xl cursor-pointer gap-2"
+            >
+              {isDownloadingTransparent ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              )}
+              <span>Download Removed BG QR Only</span>
             </Button>
 
             <div className="grid grid-cols-2 gap-2">
